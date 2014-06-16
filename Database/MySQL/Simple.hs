@@ -163,20 +163,32 @@ formatMany conn q@(Query template) qs = do
                                         [fromByteString after]
     _ -> error "foo"
   where
-    skipWhile1 f = satisfy f *> skipWhile f
     parser = do
-      -- Skip VALUES keyword
-      skipWhile1 (/= '?') *> take 1 *> stringCI "values" *> skipSpace
-      -- Take (...?
-      before <- char '(' *> takeTill (== '?')
-      -- Skip ?,?,?...
-      skipMany (skipSpace *> char ',' *> skipSpace *> char '?')
-      -- Take )
-      qbits <- takeWhile (== ' ') <* char ')'
+      before <- parseBegin
+      char '('
+      qbits <- parseQBits
+      char ')'
       after <- takeWhile (/= '?')
       endOfInput
-      return ('(' `B.cons` before, qbits `B.snoc` ')', after)
+      return (B.concat before, '(' `B.cons` (qbits `B.snoc` ')' ), after)
+      where 
+        wordChar = inClass "a-zA-Z0-9_"
+        nonWordChar = notInClass "a-zA-Z0-9_"
+        charToByteString = fmap B.singleton
+        manyTillInclusive p end = scan
+          where scan = (end) <|> liftA2 (:) p scan
+        parseValue = do 
+          b <- charToByteString $ satisfy nonWordChar
+          v <- stringCI "values"
+          s <- fmap B.pack $ many space
+          n <- peekChar' 
+          if (n == '(') then (return $ ([b, v, s])) else (fail "x")
 
+        parseBegin = manyTillInclusive (fmap B.singleton $ notChar '?') parseValue
+        parseQuestion = skipSpace *> char '?'
+        parseQuestionRemainder :: Parser [B.ByteString]
+        parseQuestionRemainder = many $ skipSpace *> char ',' *> skipSpace *> char '?' *> return ",?"
+        parseQBits = (B.append) <$> (fmap B.singleton parseQuestion) <*> (fmap B.concat parseQuestionRemainder)
 
 buildQuery :: Connection -> Query -> ByteString -> [Action] -> IO Builder
 buildQuery conn q template xs = zipParams (split template) <$> mapM sub xs
