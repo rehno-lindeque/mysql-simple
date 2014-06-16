@@ -165,10 +165,13 @@ formatMany conn q@(Query template) qs = do
   where
     -- attempts to duplicate functionality of the regular expression that it replaces
     parser = do
+      -- '^([^?]+\bvalues\s)
       before <- parseBegin
       _ <- char '('
+      -- (\(\s*[?](?:\s*,\s*[?])*\s*\))
       qbits <- parseQBits
       _ <- char ')'
+      -- ([^?]*)$
       after <- takeWhile (/= '?')
       endOfInput
       return (B.concat before, '(' `B.cons` (qbits `B.snoc` ')' ), after)
