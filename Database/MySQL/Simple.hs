@@ -155,29 +155,39 @@ formatQuery conn q@(Query template) qs
 formatMany :: (QueryParams q) => Connection -> Query -> [q] -> IO ByteString
 formatMany _ q [] = fmtError "no rows supplied" q []
 formatMany conn q@(Query template) qs = do
-  case parse parser template of
-    Done _ (before,qbits,after) -> do
+  case parseOnly parser template of
+    Right (before,qbits,after) -> do
       bs <- mapM (buildQuery conn q qbits . renderParams) qs
       return . toByteString . mconcat $ fromByteString before :
                                         intersperse (fromChar ',') bs ++
                                         [fromByteString after]
     _ -> error "foo"
   where
-    skipWhile1 f = satisfy f *> skipWhile f
+    -- attempts to duplicate functionality of the regular expression that it replaces
     parser = do
-      -- Skip VALUES keyword
-      skipWhile1 (/= '?') *> take 1 *> stringCI "values" *> skipSpace
-      -- Take (...?
-      before <- char '(' *> takeTill (== '?')
-      -- Skip ?,?,?...
-      skipMany (skipSpace *> char ',' *> skipSpace *> char '?')
-      -- Take )
-      qbits <- takeWhile (== ' ') <* char ')'
+      -- '^([^?]+\bvalues\s)
+      before <- parseBegin
+      _ <- char '('
+      -- (\(\s*[?](?:\s*,\s*[?])*\s*\))
+      qbits <- parseQBits
+      _ <- char ')'
+      -- ([^?]*)$
       after <- takeWhile (/= '?')
       endOfInput
-      return ('(' `B.cons` before, qbits `B.snoc` ')', after)
-
-
+      return (B.concat before, '(' `B.cons` (qbits `B.snoc` ')' ), after)
+      where 
+        parseBegin = manyTillInclusive (fmap B.singleton $ notChar '?') parseValue
+        parseValue = fmap (return . fst) $ match $ 
+          satisfy wordChar >> many (satisfy nonWordChar) >> stringCI "values" >> many space >> peekChar' >>=  \n ->
+            if (n == '(') then (return ()) else (fail "")
+        parseQuestion = skipSpace *> char '?'
+        parseQuestionRemainder = many $ B.pack ",?" <$ (skipSpace *> char ',' *> skipSpace *> char '?') 
+        parseQBits = (B.cons) <$> (parseQuestion) <*> (fmap B.concat parseQuestionRemainder)
+        wordChar = inClass "a-zA-Z0-9_"
+        nonWordChar = notInClass "a-zA-Z0-9_"
+        manyTillInclusive p end = scan'
+          where scan' = (end) <|> liftA2 (:) p scan'
+        
 buildQuery :: Connection -> Query -> ByteString -> [Action] -> IO Builder
 buildQuery conn q template xs = zipParams (split template) <$> mapM sub xs
   where sub (Plain b)  = pure b
